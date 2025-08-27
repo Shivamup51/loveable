@@ -1,14 +1,14 @@
 import { inngest } from "./client";
-import { openai, createAgent, createTool, createNetwork,  type Tool } from "@inngest/agent-kit";
+import { openai, createAgent, createTool, createNetwork, type Tool } from "@inngest/agent-kit";
 import { Sandbox } from "@e2b/code-interpreter";
 import { getSandbox, lastAssistantTextMessageContent } from "./utils";
-import { object, z } from "zod"; // Add this import that was missing
+import { z } from "zod";
 import { PROMPT } from "@/prompt";
 import prisma from "@/lib/db";
 
 interface AgentState {
-  summary :string;
-  files: {[path : string]: string};
+  summary: string;
+  files: {[path: string]: string};
 }
 
 export const codeAgentFunction = inngest.createFunction(
@@ -26,8 +26,7 @@ export const codeAgentFunction = inngest.createFunction(
       system: PROMPT,
       model: openai({
         model: "gpt-4o",
-        defaultParameters:
-         {
+        defaultParameters: {
           temperature: 0.1,
         }
       }),
@@ -35,10 +34,11 @@ export const codeAgentFunction = inngest.createFunction(
         createTool({
           name: "Terminal",
           description: "Use the terminal to run commands.",
-          // Use `input` for simple, single-string arguments.
-          input: z.string().describe("The command to run in the terminal."),
-          handler: async (command, { step }) => {
-            return await step?.run('terminal', async () => {
+          parameters: z.object({
+            command: z.string().describe("The command to run in the terminal.")
+          }) as any,
+          handler: async ({ command }: { command: string }, { step }: any) => {
+            return await step.run('terminal', async () => {
               const buffers = { stdout: "", stderr: "" };
               try {
                 const sandbox = await getSandbox(sandboxId);
@@ -57,7 +57,6 @@ export const codeAgentFunction = inngest.createFunction(
         createTool({
           name: "createOrUpdateFiles",
           description: "Create or update one or more files in the sandbox.",
-          // Use `parameters` for structured, object-based arguments.
           parameters: z.object({
             files: z.array(
               z.object({
@@ -65,9 +64,10 @@ export const codeAgentFunction = inngest.createFunction(
                 content: z.string().describe("The content to write into the file."),
               }),
             ).describe("An array of files to create or update."),
-          }),
-          handler: async ({ files }, { step, network }: Tool.Options<AgentState>) => {
-            const result = await step?.run('create-or-update-files', async () => {
+          }) as any,
+          handler: async (input: { files: Array<{ path: string; content: string }> }, { step, network }: any) => {
+            const { files } = input;
+            const result = await step.run('create-or-update-files', async () => {
               try {
                 const currentState = network.state.data.files || {};
                 const sandbox = await getSandbox(sandboxId);
@@ -95,9 +95,10 @@ export const codeAgentFunction = inngest.createFunction(
           description: "Read the contents of one or more files from the sandbox.",
           parameters: z.object({
             files: z.array(z.string()).describe("An array of file paths to read."),
-          }),
-          handler: async ({ files }, { step }) => {
-            return await step?.run('readFiles', async () => {
+          }) as any,
+          handler: async (input: { files: string[] }, { step }: any) => {
+            const { files } = input;
+            return await step.run('readFiles', async () => {
               try {
                 const sandbox = await getSandbox(sandboxId);
                 const contents = [];
@@ -150,11 +151,11 @@ export const codeAgentFunction = inngest.createFunction(
     });
 
     await step.run("save-result", async () => {
-
       if(isError){
         return await prisma.message.create({
           data: {
-            content: "something went worng , please try again",
+            projectId: event.data.projectId,
+            content: "something went wrong, please try again",
             role: "ASSISTANT",
             type: "ERROR",
           }
@@ -163,13 +164,14 @@ export const codeAgentFunction = inngest.createFunction(
 
       return await prisma.message.create({
         data: {
+          projectId: event.data.projectId,
           content: result.state.data.summary,
           role: "ASSISTANT",
           type: "RESULT",
           fragement: {
             create: {
               sandboxUrl: sandboxUrl,
-              title: 'Fragement',
+              title: 'Fragment',
               files: result.state.data.files,
             },
           },
@@ -179,7 +181,7 @@ export const codeAgentFunction = inngest.createFunction(
 
     return {
       url: sandboxUrl,
-      title: 'Fragement',
+      title: 'Fragment',
       files: result.state.data.files,
       summary: result.state.data.summary,
     };
