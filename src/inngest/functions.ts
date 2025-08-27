@@ -1,28 +1,33 @@
 import { inngest } from "./client";
-import { openai, createAgent, createTool, createNetwork } from "@inngest/agent-kit";
+import { openai, createAgent, createTool, createNetwork,  type Tool } from "@inngest/agent-kit";
 import { Sandbox } from "@e2b/code-interpreter";
 import { getSandbox, lastAssistantTextMessageContent } from "./utils";
-import { z } from "zod"; // Add this import that was missing
+import { object, z } from "zod"; // Add this import that was missing
 import { PROMPT } from "@/prompt";
+import prisma from "@/lib/db";
 
+interface AgentState {
+  summary :string;
+  files: {[path : string]: string};
+}
 
-
-export const helloWorld = inngest.createFunction(
-  { id: "hello-world" },
-  { event: "test/hello.world" },
+export const codeAgentFunction = inngest.createFunction(
+  { id: "code-agent" },
+  { event: "code-agent/run" },
   async ({ event, step }) => {
     const sandboxId = await step.run('get-sandbox-id', async () => {
       const sandbox = await Sandbox.create('loveable-app');
       return sandbox.sandboxId;
     });
 
-    const CodeAgent = createAgent({
+    const CodeAgent = createAgent<AgentState>({
       name: "CodeAgent",
       description: 'An Expert coding agent',
       system: PROMPT,
       model: openai({
         model: "gpt-4o",
-        defaultParameters: {
+        defaultParameters:
+         {
           temperature: 0.1,
         }
       }),
@@ -33,7 +38,7 @@ export const helloWorld = inngest.createFunction(
           // Use `input` for simple, single-string arguments.
           input: z.string().describe("The command to run in the terminal."),
           handler: async (command, { step }) => {
-            return await step.run('terminal', async () => {
+            return await step?.run('terminal', async () => {
               const buffers = { stdout: "", stderr: "" };
               try {
                 const sandbox = await getSandbox(sandboxId);
@@ -61,8 +66,8 @@ export const helloWorld = inngest.createFunction(
               }),
             ).describe("An array of files to create or update."),
           }),
-          handler: async ({ files }, { step, network }) => {
-            const result = await step.run('create-or-update-files', async () => {
+          handler: async ({ files }, { step, network }: Tool.Options<AgentState>) => {
+            const result = await step?.run('create-or-update-files', async () => {
               try {
                 const currentState = network.state.data.files || {};
                 const sandbox = await getSandbox(sandboxId);
@@ -92,7 +97,7 @@ export const helloWorld = inngest.createFunction(
             files: z.array(z.string()).describe("An array of file paths to read."),
           }),
           handler: async ({ files }, { step }) => {
-            return await step.run('readFiles', async () => {
+            return await step?.run('readFiles', async () => {
               try {
                 const sandbox = await getSandbox(sandboxId);
                 const contents = [];
@@ -121,7 +126,7 @@ export const helloWorld = inngest.createFunction(
       },
     });
 
-    const network = createNetwork({
+    const network = createNetwork<AgentState>({
       name: "CodeAgentNetwork",
       agents: [CodeAgent],
       maxIter: 15,
@@ -136,10 +141,40 @@ export const helloWorld = inngest.createFunction(
 
     const result = await network.run(event.data.value);
 
+    const isError = !result.state.data.summary || Object.keys(result.state.data.files || {}).length === 0;
+
     const sandboxUrl = await step.run('get-sandbox-url', async () => {
       const sandbox = await getSandbox(sandboxId);
       const host = sandbox.getHost(3000);
       return `https://${host}`;
+    });
+
+    await step.run("save-result", async () => {
+
+      if(isError){
+        return await prisma.message.create({
+          data: {
+            content: "something went worng , please try again",
+            role: "ASSISTANT",
+            type: "ERROR",
+          }
+        });
+      }
+
+      return await prisma.message.create({
+        data: {
+          content: result.state.data.summary,
+          role: "ASSISTANT",
+          type: "RESULT",
+          fragement: {
+            create: {
+              sandboxUrl: sandboxUrl,
+              title: 'Fragement',
+              files: result.state.data.files,
+            },
+          },
+        }
+      });
     });
 
     return {
@@ -148,5 +183,5 @@ export const helloWorld = inngest.createFunction(
       files: result.state.data.files,
       summary: result.state.data.summary,
     };
-  },
+  }
 );
