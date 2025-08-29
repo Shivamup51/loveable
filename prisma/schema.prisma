@@ -38,10 +38,10 @@ model Message {
   projectId String
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  fragement Fragement?
+  fragment Fragment?
 }
 
-model Fragement {
+model Fragment {
   id        String  @id @default(uuid())
   messageId String  @unique
   message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
